@@ -1,5 +1,5 @@
 # Start with Rust official image to build the application.
-FROM rust:1.68 as builder
+FROM rust:1.75 as builder
 
 # Create a new empty shell project and build dependencies.
 # This step is done to cache dependencies and only rebuilds them when they change.
@@ -33,6 +33,6 @@ COPY --from=builder /usr/src/apollo/target/release/apollo /usr/local/bin/apollo
 # Set the start command.
 CMD ["apollo"]
 
-# Expose port 8080 to the outside world.
+# Expose port 8081 to the outside world.
 EXPOSE 8081
 
