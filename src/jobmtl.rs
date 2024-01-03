@@ -1,7 +1,5 @@
 use async_std::net::TcpStream;
 
-use bb8::Pool;
-use bb8_tiberius::ConnectionManager;
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -19,10 +17,12 @@ pub struct JobMtl {
     pub mtl: i32,
     pub jobop: i32,
     pub part_num: String,
-    pub demand: Vec<Demand>,
+    pub description: String,
     pub direct: bool,
     pub req_qty: Decimal,
+    pub issued_qty: Decimal,
     pub req_date: NaiveDate,
+    pub demand: Vec<Demand>,
 }
 
 pub async fn get_job_boms(job_numbers: &Vec<&str>) -> Result<Vec<JobMtl>, anyhow::Error> {
@@ -42,8 +42,10 @@ pub async fn get_job_boms(job_numbers: &Vec<&str>) -> Result<Vec<JobMtl>, anyhow
                 JM.AssemblySeq,
                 JM.MtlSeq,
                 JM.PartNum,
+                JM.Description,
                 JM.Direct,
                 JM.RequiredQty,
+                JM.IssuedQty,
                 JM.ReqDate,
                 JM.RelatedOperation
             FROM 
@@ -93,9 +95,14 @@ pub async fn get_job_boms(job_numbers: &Vec<&str>) -> Result<Vec<JobMtl>, anyhow
         let mtl = val.get("MtlSeq").unwrap_or(0).to_owned();
         let jobop = val.get("RelatedOperation").unwrap_or(0).to_owned();
         let part_num = val.get("PartNum").unwrap_or("").to_owned();
+        let description = val.get("Description").unwrap_or("").to_owned();
         let direct = val.get::<bool, _>("Direct").unwrap_or(false).to_owned();
         let req_qty = val
             .get::<Decimal, _>("RequiredQty")
+            .unwrap_or(dec![0.0])
+            .to_owned();
+        let issued_qty = val
+            .get::<Decimal, _>("IssuedQty")
             .unwrap_or(dec![0.0])
             .to_owned();
         let req_date = val
@@ -108,11 +115,13 @@ pub async fn get_job_boms(job_numbers: &Vec<&str>) -> Result<Vec<JobMtl>, anyhow
             asm,
             mtl,
             part_num,
+            description,
             demand: vec![],
             direct,
             req_qty,
             req_date,
             jobop,
+            issued_qty,
         });
     });
 
@@ -128,6 +137,7 @@ pub async fn get_job_boms(job_numbers: &Vec<&str>) -> Result<Vec<JobMtl>, anyhow
 
     return Ok(result);
 }
+
 pub async fn get_job_bom(job_num: &str) -> Result<Vec<JobMtl>, anyhow::Error> {
     let config = get_sql_config();
 
@@ -146,10 +156,12 @@ pub async fn get_job_bom(job_num: &str) -> Result<Vec<JobMtl>, anyhow::Error> {
                 JM.AssemblySeq,
                 JM.MtlSeq,
                 JM.PartNum,
+                JM.Description,
                 JM.Direct,
                 JM.RequiredQty,
                 JM.ReqDate,
-                JM.RelatedOperation
+                JM.RelatedOperation,
+                JM.IssuedQty
             FROM 
                 Erp.JobMtl as JM
             WHERE 
@@ -174,9 +186,14 @@ pub async fn get_job_bom(job_num: &str) -> Result<Vec<JobMtl>, anyhow::Error> {
         let mtl = val.get("MtlSeq").unwrap_or(0).to_owned();
         let jobop = val.get("RelatedOperation").unwrap_or(0).to_owned();
         let part_num = val.get("PartNum").unwrap_or("").to_owned();
+        let description = val.get("Description").unwrap_or("").to_owned();
         let direct = val.get::<bool, _>("Direct").unwrap_or(false).to_owned();
         let req_qty = val
             .get::<Decimal, _>("RequiredQty")
+            .unwrap_or(dec![0.0])
+            .to_owned();
+        let issued_qty = val
+            .get::<Decimal, _>("IssuedQty")
             .unwrap_or(dec![0.0])
             .to_owned();
         let req_date = val
@@ -189,11 +206,13 @@ pub async fn get_job_bom(job_num: &str) -> Result<Vec<JobMtl>, anyhow::Error> {
             asm,
             mtl,
             part_num,
+            description,
             demand: vec![],
             direct,
             req_qty,
             req_date,
             jobop,
+            issued_qty,
         });
     });
 

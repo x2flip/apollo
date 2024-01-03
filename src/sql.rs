@@ -1,5 +1,3 @@
-use std::ops::IndexMut;
-
 use chrono::NaiveDate;
 use rust_decimal::Decimal;
 use serde::Serialize;
@@ -58,7 +56,7 @@ impl SQLReturnRow {
             id: 0,
             requirement: false,
             part_num: part_num.to_string(),
-            due_date: NaiveDate::from_ymd(1999, 1, 1),
+            due_date: NaiveDate::from_ymd_opt(1999, 1, 1).unwrap(),
             sourcefile: "OH".to_owned(),
             qty,
             net_qty: qty,

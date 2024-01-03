@@ -1,7 +1,6 @@
 extern crate chrono;
 
 mod baq;
-mod createdate;
 mod directlinks;
 mod jobmtl;
 mod onhand;
@@ -13,7 +12,6 @@ use actix_web::body::BoxBody;
 use actix_web::http::header::ContentType;
 use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use async_std::net::TcpStream;
-use bb8_tiberius::ConnectionManager;
 use chrono::NaiveDate;
 use onhand::OnHand;
 use parttimephase::{Demand, Supply};
@@ -26,15 +24,12 @@ use std::io::{Error, ErrorKind};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 use std::vec::Vec;
-use tiberius::{Client, Query, Config, EncryptionLevel};
+use tiberius::{Client, Query};
 
 use crate::directlinks::get_make_direct_jobs;
 use crate::jobmtl::{get_job_bom, get_job_boms};
 use crate::onhand::get_parts_on_hand;
 use crate::sql::{get_sql_config, SQLReturnRow};
-
-// bb8 Adapters for connection pooling
-use bb8::Pool;
 
 impl Responder for SQLReturnRow {
     type Body = BoxBody;
@@ -70,8 +65,6 @@ async fn all() -> impl Responder {
     let data = get_time_phase_data(None).await.unwrap();
 
     let res = Arc::try_unwrap(data).expect("").into_inner().expect("");
-
-    println!("Res: {:#?}", res);
 
     let response = HttpResponse::Ok()
         .content_type("application/json")
@@ -115,22 +108,12 @@ async fn index(path: web::Path<String>) -> impl Responder {
 #[get("order/{orderlinerel}")]
 async fn get_order(path: web::Path<String>) -> impl Responder {
     let orderlinerel: String = path.into_inner();
-    println!("{:#?}", orderlinerel);
     let mut spl = orderlinerel.split("-");
-    println!("{:#?}", spl);
     let order_num = spl.next();
-    println!("Order Number: {:#?}", order_num);
-    let order_line = spl.next();
-    println!("Order Line: {:#?}", order_line);
-    let order_rel = spl.next();
-    println!("Order Release: {:#?}", order_rel);
+    let _order_line = spl.next();
+    let _order_rel = spl.next();
 
-    println!("Pegging all data...");
-    let tp_start = Instant::now();
-
-    let time_phase_data = get_time_phase_data(None).await.unwrap();
-    let tp_dur = tp_start.elapsed();
-    println!("Pegging took: {:#?}", tp_dur);
+    let _time_phase_data = get_time_phase_data(None).await.unwrap();
 
     let response = match serde_json::to_string(&order_num) {
         Ok(res) => HttpResponse::Ok()
@@ -240,14 +223,28 @@ async fn job(path: web::Path<String>) -> impl Responder {
     let job_num: String = path.into_inner();
 
     let mut job_bom = get_job_bom(&job_num).await.unwrap();
-    let part_numbers = job_bom.iter().map(|item| item.part_num.to_owned()).collect::<Vec<String>>();
-    let peg_process_start = Instant::now();
 
-    println!("Starting Pegging");
+    let mut is_everything_issued = true;
+    job_bom.iter().for_each(|mtl| {
+        if mtl.issued_qty < mtl.req_qty {
+            is_everything_issued = false;
+        }
+    });
+
+    if is_everything_issued {
+        println!("Everything is issued complete!");
+        return HttpResponse::Ok()
+            .content_type("application/json")
+            .body(serde_json::to_string(&job_bom).unwrap());
+    };
+
+
+
+
+    let part_numbers = job_bom.iter().map(|item| item.part_num.to_owned()).collect::<Vec<String>>();
+
+
     let time_phase_data = get_time_phase_data(Some(part_numbers)).await.unwrap();
-    println!("Data retrieved: {:#?}", time_phase_data);
-    let peg_process_dur = peg_process_start.elapsed();
-    println!("Pegging took: {:#?}", peg_process_dur);
 
     let new_time_phase_data = Arc::try_unwrap(time_phase_data)
         .expect("Lock still has multiple owners")
@@ -255,7 +252,10 @@ async fn job(path: web::Path<String>) -> impl Responder {
         .expect("Mutex cannot be unlocked");
 
     for job_mtl in &mut job_bom {
-        if job_mtl.direct {
+        if job_mtl.issued_qty >= job_mtl.req_qty {
+            println!("Material is issued complete");
+            continue;
+        } else if job_mtl.direct {
             println!("This line is make or purchase direct!");
             let mut dmd = Demand {
                 part_number: job_mtl.part_num.to_owned(),
@@ -360,7 +360,7 @@ pub async fn get_time_phase_data(part_numbers: Option<Vec<String>>) -> Result<Ar
                 and PD.Company = 'AE'
                 and PD.PartNum IN (".to_string();
 
-    parts.iter().enumerate().for_each(|(i, v)| {
+    parts.iter().enumerate().for_each(|(i, _)| {
         let next = parts.get(i + 1);
         match next {
             Some(_) => new_query.push_str(&format!("@P{}, ", i + 1)),
@@ -379,12 +379,10 @@ pub async fn get_time_phase_data(part_numbers: Option<Vec<String>>) -> Result<Ar
     let mut result: Vec<SQLReturnRow> = vec![];
 
     let qry_start = Instant::now();
-    println!("Final Query: {}", new_query);
     let mut new_query = Query::new(new_query);
     parts.iter().for_each(|part| {
         new_query.bind(part.to_owned());
     });
-    println!("Final Query With Params: {:?}", new_query);
 
     // Stream Query
     let stream = new_query.query(&mut client).await?;
@@ -518,7 +516,7 @@ fn get_unique_part_numbers(part_dtls: &Vec<SQLReturnRow>) -> Vec<String> {
     return part_numbers;
 }
 
-fn peg_part_dtl(part_dtl: Vec<&SQLReturnRow>, on_hand: &Vec<OnHand>) -> Vec<Demand> {
+fn _peg_part_dtl(part_dtl: Vec<&SQLReturnRow>, on_hand: &Vec<OnHand>) -> Vec<Demand> {
     let mut intermediate_pegging: Vec<Demand> = Vec::new();
 
     let mut remaining_supplies: Vec<SQLReturnRow> = vec![];
