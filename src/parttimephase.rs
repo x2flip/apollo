@@ -28,4 +28,7 @@ pub struct Supply {
     pub job_num: String,
     pub asm: i32,
     pub mtl: i32,
+    pub po_num: Option<i32>,
+    pub po_line: Option<i32>,
+    pub po_rel: Option<i32>,
 }

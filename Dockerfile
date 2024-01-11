@@ -1,5 +1,5 @@
 # Start with Rust official image to build the application.
-FROM rust:1.75 as builder
+FROM rust:bookworm as builder
 
 # Create a new empty shell project and build dependencies.
 # This step is done to cache dependencies and only rebuilds them when they change.
@@ -15,7 +15,7 @@ RUN touch src/main.rs && cargo build --release
 
 # Start a new build stage: this will reduce the image size 
 # by leaving out build dependencies and intermediate artifacts.
-FROM debian:bullseye
+FROM debian:bookworm-slim
 
 # Install SSL certificates.
 RUN apt-get update \

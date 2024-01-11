@@ -47,6 +47,9 @@ pub struct SQLReturnRow {
     pub order: i32,
     pub order_line: i32,
     pub order_rel: i32,
+    pub po_num: Option<i32>,
+    pub po_line: Option<i32>,
+    pub po_rel: Option<i32>,
     pub direct: bool,
 }
 
@@ -67,6 +70,9 @@ impl SQLReturnRow {
             order_line: 0,
             order_rel: 0,
             direct: false,
+            po_num: None,
+            po_line: None,
+            po_rel: None,
         }
     }
 }

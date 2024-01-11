@@ -47,6 +47,8 @@ impl Responder for SQLReturnRow {
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         let cors = Cors::permissive();
+        let new_cors = Cors::default()
+            .allow_any_origin();
         App::new()
             .wrap(cors)
             .service(index)
@@ -125,6 +127,19 @@ async fn get_order(path: web::Path<String>) -> impl Responder {
     response
 }
 
+fn transform_zero_to_none(val: Option<i32>) -> Option<i32> {
+    match val {
+        Some(v) => {
+            if v == 0 {
+                None
+            } else {
+                Some(v)
+            }
+        },
+        None => None,
+    }
+}
+
 #[get("jobs/{job_numbers}")]
 async fn jobs(path: web::Path<String>) -> impl Responder {
     let url_str: String = path.into_inner();
@@ -185,6 +200,9 @@ async fn jobs(path: web::Path<String>) -> impl Responder {
                     job_num: job_prod.job_num,
                     asm: 0,
                     mtl: 0,
+                    po_num: None,
+                    po_rel: None,
+                    po_line: None,
                 })
             }
 
@@ -283,6 +301,9 @@ async fn job(path: web::Path<String>) -> impl Responder {
                     job_num: job_prod.job_num,
                     asm: 0,
                     mtl: 0,
+                    po_line: None,
+                    po_rel: None,
+                    po_num: None,
                 })
             }
 
@@ -427,6 +448,9 @@ pub async fn get_time_phase_data(part_numbers: Option<Vec<String>>) -> Result<Ar
         let order = val.get::<i32, _>("OrderNum").unwrap().to_owned();
         let order_line = val.get::<i32, _>("OrderLine").unwrap().to_owned();
         let order_rel = val.get::<i32, _>("OrderRelNum").unwrap().to_owned();
+        let po_num = transform_zero_to_none(val.get::<i32, _>("PONum").to_owned());
+        let po_line = transform_zero_to_none(val.get::<i32, _>("POLine").to_owned());
+        let po_rel = transform_zero_to_none(val.get::<i32, _>("PORelNum").to_owned());
 
         if requirement {
             net_qty = net_qty.saturating_sub(qty);
@@ -448,6 +472,9 @@ pub async fn get_time_phase_data(part_numbers: Option<Vec<String>>) -> Result<Ar
             order,
             order_line,
             order_rel,
+            po_num,
+            po_line,
+            po_rel,
             direct: !direct,
         });
 
@@ -580,6 +607,9 @@ fn _peg_part_dtl(part_dtl: Vec<&SQLReturnRow>, on_hand: &Vec<OnHand>) -> Vec<Dem
                 asm: remaining_supplies[0].asm,
                 mtl: remaining_supplies[0].mtl,
                 pegged_qty: supply_used_quantity,
+                po_num: remaining_supplies[0].po_num,
+                po_line: remaining_supplies[0].po_line,
+                po_rel: remaining_supplies[0].po_rel,
             });
 
             // Subtract any used quantity from the supply
@@ -679,6 +709,9 @@ fn multi_peg_part_dtl(
                 asm: remaining_supplies[0].asm,
                 mtl: remaining_supplies[0].mtl,
                 pegged_qty: supply_used_quantity,
+                po_num: remaining_supplies[0].po_num,
+                po_line: remaining_supplies[0].po_line,
+                po_rel: remaining_supplies[0].po_rel,
             });
 
             // Subtract any used quantity from the supply
