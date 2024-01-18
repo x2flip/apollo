@@ -1,0 +1,11 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8081:8081"
+    environment:
+      SQL_HOST: 
+      SQL_PORT: 
+      SQL_DB: 
+      SQL_USER: 
+      SQL_PASS: 
