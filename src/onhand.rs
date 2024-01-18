@@ -54,7 +54,7 @@ pub async fn get_parts_on_hand() -> Result<Vec<OnHand>, anyhow::Error> {
 	        and PartBin.BinNum = WhseBin.BinNum
 	        and ( WhseBin.NonNettable = 0  )
 
-        where (not Warehse.Plant like 'CONS%')
+        where (not Warehse.Plant like 'CONS%' and Warehse.Company = 'AE')
 
         group by 
             [PartWhse].[PartNum],

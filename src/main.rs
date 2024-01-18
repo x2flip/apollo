@@ -47,8 +47,6 @@ impl Responder for SQLReturnRow {
 async fn main() -> std::io::Result<()> {
     HttpServer::new(|| {
         let cors = Cors::permissive();
-        let new_cors = Cors::default()
-            .allow_any_origin();
         App::new()
             .wrap(cors)
             .service(index)
@@ -498,31 +496,14 @@ pub async fn get_time_phase_data(part_numbers: Option<Vec<String>>) -> Result<Ar
     let unq_dur = unq_start.elapsed();
     println!("Getting Unique Parts took: {:#?}", unq_dur);
 
+    // Peg unique part numbers
     unique_part_numbers.par_iter().for_each(|item| {
-        //let filtered_parts: Vec<&SQLReturnRow> = result
-        //   .iter()
-        //  .filter(|part| &part.part_num == item)
-        // .collect();
-
-        //let filtered_on_hand = on_hand
-        //   .iter()
-        //  .filter(|row| &row.part_num == item)
-        // .cloned()
-        //.collect();
-
-        //let peg_data = peg_part_dtl(filtered_parts, &filtered_on_hand);
         let multi_peg_data = multi_peg_part_dtl(&result, &on_hand, &item);
         let mut multi_results = multi_results.lock().unwrap();
         multi_results.insert(item.to_owned(), multi_peg_data);
 
-        //new_result.insert(item.to_string(), peg_data);
     });
 
-    // Result set should be cached now
-
-    // Get filtered result based on part number
-
-    //return Ok(new_result);
     Ok(multi_results)
 }
 
@@ -643,11 +624,13 @@ fn multi_peg_part_dtl(
         .into_iter()
         .filter(|part| &part.part_num == part_num)
         .collect();
+    //println!("Part: {:#?}", filtered_parts);
 
     let filtered_on_hand: Vec<&OnHand> = on_hand
         .into_iter()
         .filter(|row| &row.part_num == part_num)
         .collect();
+    println!("On Hand: {:#?}", filtered_on_hand);
 
     let mut intermediate_pegging: Vec<Demand> = Vec::new();
 
