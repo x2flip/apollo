@@ -14,7 +14,7 @@ use actix_web::{get, web, App, HttpResponse, HttpServer, Responder};
 use async_std::net::TcpStream;
 use chrono::NaiveDate;
 use onhand::OnHand;
-use parttimephase::{Demand, Supply};
+use parttimephase::{Demand, Supply, PartDtl};
 use rayon::prelude::*;
 use rust_decimal::Decimal;
 use rust_decimal_macros::dec;
@@ -54,6 +54,7 @@ async fn main() -> std::io::Result<()> {
             .service(jobs)
             .service(get_order)
             .service(all)
+            .service(all_new)
     })
     .bind(("0.0.0.0", 8081))?
     .run()
@@ -62,13 +63,31 @@ async fn main() -> std::io::Result<()> {
 
 #[get("/all/all")]
 async fn all() -> impl Responder {
-    let data = get_time_phase_data(None).await.unwrap();
+    let data = get_all_time_phase_data().await.unwrap();
 
     let res = Arc::try_unwrap(data).expect("").into_inner().expect("");
 
     let response = HttpResponse::Ok()
         .content_type("application/json")
         .body(serde_json::to_string(&res).unwrap());
+
+    // Get the data
+    // Filter the data by job_num
+    //      In order to do this, we need to get the entire BOM for the job. Need JobMtl table
+    //      Then filter entire list of data for each part on the BOM. Only return the result sets
+    //      where the Demand is for the related job
+
+    response
+}
+
+#[get("/all/new")]
+async fn all_new() -> impl Responder {
+    let data = get_new_time_phase_details().await.unwrap();
+
+
+    let response = HttpResponse::Ok()
+        .content_type("application/json")
+        .body(serde_json::to_string(&data).unwrap());
 
     // Get the data
     // Filter the data by job_num
@@ -332,6 +351,324 @@ async fn job(path: web::Path<String>) -> impl Responder {
     //      where the Demand is for the related job
 
     response
+}
+
+pub async fn get_all_time_phase_data() -> Result<Arc<Mutex<HashMap<String, Vec<Demand>>>>, anyhow::Error>
+{
+    let config = get_sql_config();
+
+    // Create TCP TcpStream
+    let tcp = TcpStream::connect(&config.get_addr()).await?;
+    tcp.set_nodelay(true)?;
+
+    // Connect to server
+    let mut client = Client::connect(config, tcp).await?;
+    let on_hand = get_parts_on_hand().await.unwrap();
+
+    // Construct Query
+    let mut new_query = 
+        "
+            SELECT
+                PD.RequirementFlag,
+                PD.PartNum,
+                PD.SourceFile,
+                PD.Type,
+                PD.DueDate,
+                PD.Quantity,
+                PD.JobNum,
+                PD.AssemblySeq,
+                PD.JobSeq,
+                PD.OrderNum,
+                PD.OrderLine,
+                PD.OrderRelNum,
+                PD.PONum,
+                PD.POLine,
+                PD.PORelNum,
+                PD.StockTrans
+            FROM 
+                Erp.PartDtl as PD
+            LEFT OUTER JOIN Erp.Part as PART on 
+                PART.Company = PD.Company
+                and PART.PartNum = PD.PartNum
+                and (not PART.ProdCode = 'ETO' and not PART.ProdCode = 'RMA' and not PART.ProdCode = 'SAMPLE' and not PART.ProdCode = 'TOOL')
+            WHERE 
+                PD.Type <> 'Sub'
+                and PD.Plant = 'MfgSys'
+                and PD.Company = 'AE'".to_string();
+
+    new_query.push_str("
+            ORDER BY 
+                PD.PartNum,
+                PD.DueDate,
+                PD.RequirementFlag
+        ");
+
+    let mut result: Vec<SQLReturnRow> = vec![];
+
+    let qry_start = Instant::now();
+    let mut new_query = Query::new(new_query);
+
+    // Stream Query
+    let stream = new_query.query(&mut client).await?;
+
+    // Consume stream
+    let row = stream.into_first_result().await?;
+    let qry_dur = qry_start.elapsed();
+    println!("Query took: {:#?}", qry_dur);
+
+    let mut net_qty = dec!(0.0);
+    let mut id = 0;
+
+    let tf_start = Instant::now();
+    row.iter().for_each(|val| {
+        let requirement = val
+            .get::<bool, _>("RequirementFlag")
+            .unwrap_or(false.to_owned())
+            .to_owned();
+        let direct = val
+            .get::<bool, _>("StockTrans")
+            .unwrap_or(false.to_owned())
+            .to_owned();
+        let sourcefile = val
+            .get::<&str, &str>("SourceFile")
+            .unwrap_or("ER")
+            .to_owned();
+        let part_num = val
+            .get::<&str, &str>("PartNum")
+            .unwrap_or("ERROR")
+            .to_owned();
+        let qty = val
+            .get::<Decimal, _>("Quantity")
+            .unwrap_or(dec!(0.0))
+            .to_owned();
+        let due_date = val
+            .get::<NaiveDate, _>("DueDate")
+            .unwrap_or(NaiveDate::from_ymd_opt(1999, 1, 1).unwrap())
+            .to_owned();
+        let job_num = val.get::<&str, &str>("JobNum").unwrap().to_owned();
+        let asm = val.get::<i32, _>("AssemblySeq").unwrap().to_owned();
+        let mtl = val.get::<i32, _>("JobSeq").unwrap().to_owned();
+        let order = val.get::<i32, _>("OrderNum").unwrap().to_owned();
+        let order_line = val.get::<i32, _>("OrderLine").unwrap().to_owned();
+        let order_rel = val.get::<i32, _>("OrderRelNum").unwrap().to_owned();
+        let po_num = transform_zero_to_none(val.get::<i32, _>("PONum").to_owned());
+        let po_line = transform_zero_to_none(val.get::<i32, _>("POLine").to_owned());
+        let po_rel = transform_zero_to_none(val.get::<i32, _>("PORelNum").to_owned());
+
+        if requirement {
+            net_qty = net_qty.saturating_sub(qty);
+        } else {
+            net_qty = net_qty.saturating_add(qty);
+        }
+
+        result.push(SQLReturnRow {
+            id,
+            part_num,
+            job_num,
+            asm,
+            mtl,
+            requirement,
+            due_date,
+            sourcefile,
+            qty,
+            net_qty,
+            order,
+            order_line,
+            order_rel,
+            po_num,
+            po_line,
+            po_rel,
+            direct: !direct,
+        });
+
+        id += 1;
+    });
+    let tf_dur = tf_start.elapsed();
+    println!("Transform Took: {:#?}", tf_dur);
+
+    // Close Client Connection
+    client
+        .close()
+        .await
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+
+    println!("Getting unique parts");
+    let unq_start = Instant::now();
+    //let mut new_result = HashMap::new();
+    let multi_results = Arc::new(Mutex::new(HashMap::new()));
+
+    let unique_part_numbers = get_unique_part_numbers(&result);
+    let unq_dur = unq_start.elapsed();
+    println!("Getting Unique Parts took: {:#?}", unq_dur);
+
+    // Peg unique part numbers
+    unique_part_numbers.par_iter().for_each(|item| {
+        let multi_peg_data = multi_peg_part_dtl(&result, &on_hand, &item);
+        let mut multi_results = multi_results.lock().unwrap();
+        multi_results.insert(item.to_owned(), multi_peg_data);
+
+    });
+
+    Ok(multi_results)
+}
+
+pub async fn get_new_time_phase_details() -> Result< Vec<PartDtl>, anyhow::Error>
+{
+    let config = get_sql_config();
+
+    // Create TCP TcpStream
+    let tcp = TcpStream::connect(&config.get_addr()).await?;
+    tcp.set_nodelay(true)?;
+
+    // Connect to server
+    let mut client = Client::connect(config, tcp).await?;
+    let on_hand = get_parts_on_hand().await.unwrap();
+
+    // Construct Query
+    let mut new_query = 
+        "
+            SELECT
+                PD.RequirementFlag,
+                PD.PartNum,
+                PD.SourceFile,
+                PD.Type,
+                PD.DueDate,
+                PD.Quantity,
+                PD.JobNum,
+                PD.AssemblySeq,
+                PD.JobSeq,
+                PD.OrderNum,
+                PD.OrderLine,
+                PD.OrderRelNum,
+                PD.PONum,
+                PD.POLine,
+                PD.PORelNum,
+                PD.StockTrans
+            FROM 
+                Erp.PartDtl as PD
+            LEFT OUTER JOIN Erp.Part as PART on 
+                PART.Company = PD.Company
+                and PART.PartNum = PD.PartNum
+                and (not PART.ProdCode = 'ETO' and not PART.ProdCode = 'RMA' and not PART.ProdCode = 'SAMPLE' and not PART.ProdCode = 'TOOL')
+            WHERE 
+                PD.Type <> 'Sub'
+                and PD.Plant = 'MfgSys'
+                and PD.Company = 'AE'
+            ".to_string();
+
+
+    new_query.push_str("
+            ORDER BY 
+                PD.PartNum,
+                PD.DueDate,
+                PD.RequirementFlag
+        ");
+
+    let mut result: Vec<PartDtl> = vec![];
+
+    let qry_start = Instant::now();
+    let mut new_query = Query::new(new_query);
+
+    // Stream Query
+    let stream = new_query.query(&mut client).await?;
+
+    // Consume stream
+    let row = stream.into_first_result().await?;
+    let qry_dur = qry_start.elapsed();
+    println!("Query took: {:#?}", qry_dur);
+
+    let mut net_qty = dec!(0.0);
+    let mut id = 0;
+
+    let tf_start = Instant::now();
+    row.iter().for_each(|val| {
+        let requirement = val
+            .get::<bool, _>("RequirementFlag")
+            .unwrap_or(false.to_owned())
+            .to_owned();
+        let direct = val
+            .get::<bool, _>("StockTrans")
+            .unwrap_or(false.to_owned())
+            .to_owned();
+        let sourcefile = val
+            .get::<&str, &str>("SourceFile")
+            .unwrap_or("ER")
+            .to_owned();
+        let part_number = val
+            .get::<&str, &str>("PartNum")
+            .unwrap_or("ERROR")
+            .to_owned();
+        let qty = val
+            .get::<Decimal, _>("Quantity")
+            .unwrap_or(dec!(0.0))
+            .to_owned();
+        let due_date = val
+            .get::<NaiveDate, _>("DueDate")
+            .unwrap_or(NaiveDate::from_ymd_opt(1999, 1, 1).unwrap())
+            .to_owned();
+        let job_num = val.get::<&str, &str>("JobNum").unwrap().to_owned();
+        let asm = val.get::<i32, _>("AssemblySeq");
+        let mtl = val.get::<i32, _>("JobSeq");
+        let order = val.get::<i32, _>("OrderNum");
+        let order_line = val.get::<i32, _>("OrderLine");
+        let order_rel = val.get::<i32, _>("OrderRelNum");
+        let po_num = transform_zero_to_none(val.get::<i32, _>("PONum").to_owned());
+        let po_line = transform_zero_to_none(val.get::<i32, _>("POLine").to_owned());
+        let po_rel = transform_zero_to_none(val.get::<i32, _>("PORelNum").to_owned());
+
+        if requirement {
+            net_qty = net_qty.saturating_sub(qty);
+        } else {
+            net_qty = net_qty.saturating_add(qty);
+        }
+
+        result.push(PartDtl {
+            requirement,
+            part_number: part_num,
+            direct,
+            due_date,
+            sourcefile,
+            qty,
+            job_num,
+            asm,
+            mtl,
+            po_num,
+            po_line,
+            po_rel,
+            order,
+            order_line,
+            order_rel,
+            supply: vec![],
+        });
+
+        id += 1;
+    });
+    let tf_dur = tf_start.elapsed();
+    println!("Transform Took: {:#?}", tf_dur);
+
+    // Close Client Connection
+    client
+        .close()
+        .await
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+
+    println!("Getting unique parts");
+    let unq_start = Instant::now();
+    //let multi_results = Arc::new(Mutex::new(HashMap::new()));
+
+    //let unique_part_numbers = get_unique_part_numbers(&result);
+    //let unq_dur = unq_start.elapsed();
+    //println!("Getting Unique Parts took: {:#?}", unq_dur);
+
+    // Peg unique part numbers
+    //unique_part_numbers.par_iter().for_each(|item| {
+     //   let multi_peg_data = multi_peg_part_dtl(&result, &on_hand, &item);
+      //  let mut multi_results = multi_results.lock().unwrap();
+       // multi_results.insert(item.to_owned(), multi_peg_data);
+
+    //});
+
+    Ok(result)
 }
 
 pub async fn get_time_phase_data(part_numbers: Option<Vec<String>>) -> Result<Arc<Mutex<HashMap<String, Vec<Demand>>>>, anyhow::Error>

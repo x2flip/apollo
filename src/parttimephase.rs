@@ -32,3 +32,24 @@ pub struct Supply {
     pub po_line: Option<i32>,
     pub po_rel: Option<i32>,
 }
+
+#[allow(dead_code)]
+#[derive(Debug, Serialize, Clone)]
+pub struct PartDtl {
+    pub requirement: bool,
+    pub direct: bool,
+    pub part_number: String,
+    pub due_date: NaiveDate,
+    pub sourcefile: String,
+    pub qty: Decimal,
+    pub job_num: String,
+    pub asm: Option<i32>,
+    pub mtl: Option<i32>,
+    pub po_num: Option<i32>,
+    pub po_line: Option<i32>,
+    pub po_rel: Option<i32>,
+    pub order: Option<i32>,
+    pub order_line: Option<i32>,
+    pub order_rel: Option<i32>,
+    pub supply: Vec<PartDtl>,
+}
