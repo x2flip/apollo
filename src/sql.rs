@@ -76,3 +76,73 @@ impl SQLReturnRow {
         }
     }
 }
+
+pub fn define_query_string(part_numbers: Option<Vec<String>>) -> String {
+
+    // Initialize the query
+    let mut new_query = 
+        "
+            SELECT
+                PD.RequirementFlag,
+                PD.PartNum,
+                PD.SourceFile,
+                PD.Type,
+                PD.DueDate,
+                PD.Quantity,
+                PD.JobNum,
+                PD.AssemblySeq,
+                PD.JobSeq,
+                PD.OrderNum,
+                PD.OrderLine,
+                PD.OrderRelNum,
+                PD.PONum,
+                PD.POLine,
+                PD.PORelNum,
+                PD.StockTrans
+            FROM 
+                Erp.PartDtl as PD
+            LEFT OUTER JOIN Erp.Part as PART on 
+                PART.Company = PD.Company
+                and PART.PartNum = PD.PartNum
+                and (not PART.ProdCode = 'ETO' and not PART.ProdCode = 'RMA' and not PART.ProdCode = 'SAMPLE' and not PART.ProdCode = 'TOOL')
+            WHERE 
+                PD.Type <> 'Sub'
+                and PD.Plant = 'MfgSys'
+                and PD.Company = 'AE'
+                ".to_string();
+
+    // If a vector of part numbers is passed, then we will want to filter on 
+    // those in the query
+    //
+    match part_numbers {
+        Some(parts) => {
+            let mut filter_text = "and PD.PartNum IN (".to_string();
+
+            parts.iter().enumerate().for_each(|(i, _)| {
+                let next = parts.get(i + 1);
+                match next {
+                    Some(_) => new_query.push_str(&format!("@P{}, ", i + 1)),
+                    None => new_query.push_str(&format!("@P{}", i + 1))
+                }
+            });
+
+            filter_text.push(')');
+
+            filter_text
+        },
+        None => "".to_string()
+    };
+
+
+    //
+    // Add the final Order By details
+    new_query.push_str("
+            ORDER BY 
+                PD.PartNum,
+                PD.DueDate,
+                PD.RequirementFlag
+        ");
+
+    new_query
+
+}
