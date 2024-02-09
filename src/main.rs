@@ -8,6 +8,10 @@ mod parttimephase;
 mod sql;
 mod getdata;
 mod transformtozero;
+mod peg;
+mod orderrelease;
+mod backlog;
+mod peg_part_dtl;
 
 use actix_cors::Cors;
 use actix_web::body::BoxBody;
@@ -28,9 +32,10 @@ use std::time::Instant;
 use std::vec::Vec;
 use tiberius::{Client, Query};
 
+use crate::backlog::get_backlog_result;
 use crate::directlinks::get_make_direct_jobs;
 use crate::getdata::get_new_time_phase_details;
-use crate::jobmtl::{get_job_bom, get_job_boms};
+use crate::jobmtl::{get_job_bom, get_job_boms, get_all_job_boms};
 use crate::onhand::get_parts_on_hand;
 use crate::sql::{get_sql_config, SQLReturnRow};
 use crate::transformtozero::transform_zero_to_none;
@@ -53,12 +58,13 @@ async fn main() -> std::io::Result<()> {
         let cors = Cors::permissive();
         App::new()
             .wrap(cors)
-            .service(index)
+            // .service(index)
             .service(job)
             .service(jobs)
             .service(get_order)
             .service(all)
             .service(all_new)
+            .service(get_backlog)
     })
     .bind(("0.0.0.0", 8081))?
     .run()
@@ -89,9 +95,20 @@ async fn all_new() -> impl Responder {
     let data = get_new_time_phase_details().await.unwrap();
 
 
-    let response = HttpResponse::Ok()
-        .content_type("application/json")
-        .body(serde_json::to_string(&data).unwrap());
+    // let response = HttpResponse::Ok()
+    //     .content_type("application/json")
+    //     .body(serde_json::to_string(&data).unwrap());
+    //
+    let hashmap_lock = data.lock().unwrap();
+    let hashmap = hashmap_lock.clone();
+    drop(hashmap_lock);
+
+    let single_part = hashmap.get("853-305102-005(B)").unwrap();
+
+    let response = match serde_json::to_string(&single_part) {
+        Ok(json_string) => HttpResponse::Ok().content_type("application/json").body(json_string),
+        Err(e) => HttpResponse::InternalServerError().body(format!("Error serializing data: {}", e)),
+    };
 
     // Get the data
     // Filter the data by job_num
@@ -230,6 +247,68 @@ async fn jobs(path: web::Path<String>) -> impl Responder {
     }
 
     let response = match serde_json::to_string(&job_bom) {
+        Ok(res) => HttpResponse::Ok()
+            .content_type("application/json")
+            .body(res),
+        Err(_) => HttpResponse::UnavailableForLegalReasons().finish(),
+    };
+
+    // Get the data
+    // Filter the data by job_num
+    //      In order to do this, we need to get the entire BOM for the job. Need JobMtl table
+    //      Then filter entire list of data for each part on the BOM. Only return the result sets
+    //      where the Demand is for the related job
+
+    response
+}
+
+#[get("/backlog")]
+async fn get_backlog() -> impl Responder {
+    println!("Testing backlog path");
+
+    // Get the backlog of sales order releases
+    let mut backlog = get_backlog_result().await.unwrap();
+    println!("Backlog length: {:#?}", backlog.len());
+
+    // Then get all of the job get all of the job boms 
+    // This is a vec for now, but it really should be a HashMap
+    let job_bom = get_all_job_boms().await.unwrap();
+    
+    // Get all of the pegging data by part number
+    let time_phase_data = get_all_time_phase_data().await.unwrap();
+
+    let new_time_phase_data = Arc::try_unwrap(time_phase_data)
+        .expect("Lock still has multiple owners")
+        .into_inner()
+        .expect("Mutex cannot be unlocked");
+
+    // Peg sales all sales orders in the backlog 
+    backlog.iter_mut().for_each(|row| {
+        let part_number = row.part_number.clone();
+        let demand = new_time_phase_data.get(&part_number);
+        match demand {
+            Some(dmd) => {
+                let filtered_demand: Vec<&Demand> = dmd
+                    .iter()
+                    .filter(|demand| 
+                        demand.order == row.order.unwrap() 
+                        && demand.order_line == row.line.unwrap() 
+                        && demand.order_rel == row.release.unwrap()
+                    )
+                    .collect();
+
+                filtered_demand.iter().for_each(|d| {
+                    let new_dmd = d.to_owned().to_owned();
+                row.demand.push(new_dmd);
+                })
+            },
+            None => return
+        };
+    });
+
+
+
+    let response = match serde_json::to_string(&new_time_phase_data) {
         Ok(res) => HttpResponse::Ok()
             .content_type("application/json")
             .body(res),
@@ -802,7 +881,6 @@ fn multi_peg_part_dtl(
         .into_iter()
         .filter(|row| &row.part_num == part_num)
         .collect();
-    println!("On Hand: {:#?}", filtered_on_hand);
 
     let mut intermediate_pegging: Vec<Demand> = Vec::new();
 

@@ -25,6 +25,104 @@ pub struct JobMtl {
     pub demand: Vec<Demand>,
 }
 
+pub async fn get_all_job_boms() -> Result<Vec<JobMtl>, anyhow::Error> {
+    let config = get_sql_config();
+
+    // Create TCP TcpStream
+    let tcp = TcpStream::connect(&config.get_addr()).await?;
+    tcp.set_nodelay(true)?;
+
+    // Connect to server
+    let mut client = Client::connect(config, tcp).await?;
+
+    // Construct Query
+    let mut query_string = "
+            SELECT
+                JM.JobNum,
+                JM.AssemblySeq,
+                JM.MtlSeq,
+                JM.PartNum,
+                JM.Description,
+                JM.Direct,
+                JM.RequiredQty,
+                JM.IssuedQty,
+                JM.ReqDate,
+                JM.RelatedOperation
+            FROM 
+                Erp.JobMtl as JM
+            WHERE 
+                JM.Company = 'AE'
+            "
+    .to_string();
+
+    query_string.push_str(
+        "
+            ORDER BY 
+                JM.JobNum,
+                JM.AssemblySeq,
+                JM.MtlSeq
+        ",
+    );
+
+    let select = Query::new(query_string);
+
+    let mut result: Vec<JobMtl> = vec![];
+
+    // Stream Query
+    let stream = select.query(&mut client).await?;
+
+    // Consume stream
+    let row = stream.into_first_result().await?;
+
+    row.iter().for_each(|val| {
+        let job_num = val.get("JobNum").unwrap_or("").to_owned();
+        let asm = val.get("AssemblySeq").unwrap_or(0).to_owned();
+        let mtl = val.get("MtlSeq").unwrap_or(0).to_owned();
+        let jobop = val.get("RelatedOperation").unwrap_or(0).to_owned();
+        let part_num = val.get("PartNum").unwrap_or("").to_owned();
+        let description = val.get("Description").unwrap_or("").to_owned();
+        let direct = val.get::<bool, _>("Direct").unwrap_or(false).to_owned();
+        let req_qty = val
+            .get::<Decimal, _>("RequiredQty")
+            .unwrap_or(dec![0.0])
+            .to_owned();
+        let issued_qty = val
+            .get::<Decimal, _>("IssuedQty")
+            .unwrap_or(dec![0.0])
+            .to_owned();
+        let req_date = val
+            .get::<NaiveDate, _>("ReqDate")
+            .unwrap_or(NaiveDate::from_ymd_opt(1999, 1, 1).unwrap())
+            .to_owned();
+
+        result.push(JobMtl {
+            job_num,
+            asm,
+            mtl,
+            part_num,
+            description,
+            demand: vec![],
+            direct,
+            req_qty,
+            req_date,
+            jobop,
+            issued_qty,
+        });
+    });
+
+    // println!("{:?}", rows);
+
+    // Close Client Connection
+    client
+        .close()
+        .await
+        .map_err(|e| Error::new(ErrorKind::Other, e.to_string()))?;
+
+    // Result set should be cached now
+
+    return Ok(result);
+}
+
 pub async fn get_job_boms(job_numbers: &Vec<&str>) -> Result<Vec<JobMtl>, anyhow::Error> {
     let config = get_sql_config();
 
